@@ -13,7 +13,7 @@ const TERMINAL_STATES=[
     "UPDATE_COMPLETE", "UPDATE_ROLLBACK_FAILED", "UPDATE_ROLLBACK_COMPLETE",
     "IMPORT_COMPLETE", "IMPORT_ROLLBACK_FAILED", "IMPORT_ROLLBACK_COMPLETE" ];
 
-function getStack(cloudformation, stackName) {
+async function getStack(cloudformation, stackName) {
     var result;
     try {
         var stacks = await cloudformation.describeStacks({ StackName: stackName }).promise()
@@ -60,7 +60,7 @@ async function run() {
         const cloudformation = new aws.CloudFormation();
 
         // Retrieve our source stack
-        var sourceStack=getStack(cloudformation, sourceStackName);
+        var sourceStack=await getStack(cloudformation, sourceStackName).promise();
         if(sourceStack == null) {
             throw new Error(`The given source stack ${sourceStackName} does not exist`);
         }
@@ -81,7 +81,7 @@ async function run() {
         }
 
         // Retrieve our target stack
-        var targetStack=getStack(cloudformation, targetStackName);
+        var targetStack=await getStack(cloudformation, targetStackName).promise();
         if(targetStack) {
             if(READY_STATES.includes(targetStack.StackStatus)) {
                 console.log(`Accepted target stack status ${targetStack.StackStatus}`);
@@ -137,11 +137,11 @@ async function run() {
         }
 
         // Await our status
-        var stack=getStack(cloudformation, targetStackName);
+        var stack=await getStack(cloudformation, targetStackName).promise();
         while(stack && !TERMINAL_STATES.includes(stack.StackStatus)) {
             console.log(`Target stack ${targetStackName} in state ${stack.StackStatus}`)
             await new Promise(r => setTimeout(r, 15000));
-            stack = getStack(cloudformation, targetStackName);
+            stack = await getStack(cloudformation, targetStackName).promise();
         }
 
         if(stack == null) {
