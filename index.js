@@ -13,11 +13,18 @@ const TERMINAL_STATES=[
     "UPDATE_COMPLETE", "UPDATE_ROLLBACK_FAILED", "UPDATE_ROLLBACK_COMPLETE",
     "IMPORT_COMPLETE", "IMPORT_ROLLBACK_FAILED", "IMPORT_ROLLBACK_COMPLETE" ];
 
+const WORKING_STATES=[
+    "CREATE_IN_PROGRESS", "UPDATE_IN_PROGRESS", "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS",
+    "REVIEW_IN_PROGRESS", "IMPORT_IN_PROGRESS" ];
+
+const SUCCESS_STATES=[
+    "CREATE_COMPLETE", "UPDATE_COMPLETE", "IMPORT_COMPLETE" ];
+
 async function getStack(cloudformation, stackName) {
     var result;
     try {
         var stacks = await cloudformation.describeStacks({ StackName: stackName }).promise()
-        result = stack.Stacks[0];
+        result = stacks.Stacks[0];
     }
     catch(e) {
         if(e.code == 'ValidationError') {
@@ -43,11 +50,11 @@ async function getStack(cloudformation, stackName) {
 async function run() {
     try {
         // Get inputs
-        const sourceStackName = core.getInput('source-stack-name', { required: false });
+        const sourceStackName = core.getInput('source-stack-name', { required: true });
         const ignoreSourceStackStatus = (core.getInput('ignore-source-stack-status', { required: false }) || 'false') == 'true';
-        const targetStackName = core.getInput('target-stack-name', { required: false });
-        const parameterOverridesString = core.getInput('parameter-overrides', { required: false });
-        const roleArn = core.getInput('role-arn', { required: false});
+        const targetStackName = core.getInput('target-stack-name', { required: true });
+        const parameterOverridesString = core.getInput('parameter-overrides', { required: false }) || '{}';
+        const roleArn = core.getInput('role-arn', { required: true });
 
         var parameterOverrides;
         try {
@@ -60,7 +67,7 @@ async function run() {
         const cloudformation = new aws.CloudFormation();
 
         // Retrieve our source stack
-        var sourceStack=await getStack(cloudformation, sourceStackName).promise();
+        var sourceStack=await getStack(cloudformation, sourceStackName);
         if(sourceStack == null) {
             throw new Error(`The given source stack ${sourceStackName} does not exist`);
         }
@@ -81,7 +88,7 @@ async function run() {
         }
 
         // Retrieve our target stack
-        var targetStack=await getStack(cloudformation, targetStackName).promise();
+        var targetStack=await getStack(cloudformation, targetStackName);
         if(targetStack) {
             if(READY_STATES.includes(targetStack.StackStatus)) {
                 console.log(`Accepted target stack status ${targetStack.StackStatus}`);
@@ -96,8 +103,8 @@ async function run() {
 
         // Get our source template
         const sourceTemplate=await cloudformation.getTemplate({ StackName: sourceStackName, TemplateStage: "Original" })
-            .promise()
-            .TemplateBody;
+            .promise();
+        const sourceTemplateBody=sourceTemplate.TemplateBody;
 
         // Resolve our parameters
         const mergingParameters = {};
@@ -107,7 +114,7 @@ async function run() {
         Object.entries(parameterOverrides).forEach(function(p) {
             mergingParameters[p[0]] = p[1];
         });
-        const parameters = Object.entries(parameters)
+        const parameters = Object.entries(mergingParameters)
             .map(p => ({ ParameterKey: p[0], ParameterValue: p[1] }));
 
         // Update our target stack
@@ -118,7 +125,7 @@ async function run() {
                     Capabilities: [ 'CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND' ],
                     Parameters: parameters,
                     RoleARN: roleArn,
-                    TemplateBody: sourceTemplate,
+                    TemplateBody: sourceTemplateBody,
                     UsePreviousTemplate: false
                 }).promise()
             console.log(`Updated target stack ${targetStackName}`)
@@ -131,23 +138,23 @@ async function run() {
                     Capabilities: [ 'CAPABILITY_IAM', 'CAPABILITY_NAMED_IAM', 'CAPABILITY_AUTO_EXPAND' ],
                     Parameters: parameters,
                     RoleARN: roleArn,
-                    TemplateBody: sourceTemplate
+                    TemplateBody: sourceTemplateBody
                 }).promise()
             console.log(`Created target stack ${targetStackName}`)
         }
 
         // Await our status
-        var stack=await getStack(cloudformation, targetStackName).promise();
-        while(stack && !TERMINAL_STATES.includes(stack.StackStatus)) {
+        var stack=await getStack(cloudformation, targetStackName);
+        while(stack && WORKING_STATES.includes(stack.StackStatus)) {
             console.log(`Target stack ${targetStackName} in state ${stack.StackStatus}`)
             await new Promise(r => setTimeout(r, 15000));
-            stack = await getStack(cloudformation, targetStackName).promise();
+            stack = await getStack(cloudformation, targetStackName);
         }
 
         if(stack == null) {
             throw new Error(`Target staff failed to create and was deleted`);
         } else
-        if(stack.StackStatus.includes("_FAILED")) {
+        if(!SUCCESS_STATES.includes(stack.StackStatus)) {
             throw new Error(`Target staff failed to update in state ${stack.StackStatus}`);
         }
 
